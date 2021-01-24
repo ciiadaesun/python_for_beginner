@@ -118,8 +118,8 @@ def Quality(cleaned_data, data_date, today , n = 50, cleaned_price = '',cleaned_
     return df.sort_values(by = ['Total_Rank']).iloc[:n]
 
 def Value_Quality(cleaned_data, cleaned_mkt, data_date, today, n = 50, cleaned_price = '') :
-    V = Value(cleaned_data, cleaned_mkt, data_date, today, 2000)
-    Q = Quality(cleaned_data,cleaned_mkt, data_date, today , 2000)
+    V = Value(cleaned_data, cleaned_mkt, data_date, today, n = 5000,cleaned_price = '')
+    Q = Quality(cleaned_data, data_date, today , n = 5000, cleaned_price = '',cleaned_mkt='')
     data = pd.concat([V[V.columns[:-1]],Q[Q.columns[:-1]]],axis = 1)
     number_nan = data.isna().sum(1, skipna = True)
     under_3_nan = number_nan[number_nan<=3].index
@@ -165,9 +165,9 @@ def Growth(cleaned_data, data_date, n = 50, today = '', cleaned_mkt = '',cleaned
     return Data.sort_values(by = ['Total_Rank']).iloc[:n]
 
 def Value_Quality_Growth(cleaned_data, cleaned_mkt, data_date, today, n = 50, cleaned_price = '') :
-    V = Value(cleaned_data, cleaned_mkt, data_date, today, n = 2000)['Total_Rank']
-    Q = Quality(cleaned_data, cleaned_mkt, data_date, today,n = 2000)['Total_Rank']
-    G = Growth(cleaned_data, data_date,n = 2000)['Total_Rank']
+    V = Value(cleaned_data, cleaned_mkt, data_date, today, n = 5000,cleaned_price = '')['Total_Rank']
+    Q = Quality(cleaned_data, data_date, today , n = 5000, cleaned_price = '',cleaned_mkt='')['Total_Rank']
+    G = Growth(cleaned_data, data_date, n = 5000, today = '', cleaned_mkt = '',cleaned_price = '')['Total_Rank']
     DF = pd.concat([V,Q,G],axis = 1)
     DF.columns = ['Value_Rank','Quality_Rank','Growth_Rank']
     DF['Total_Rank'] = (DF['Value_Rank'] * 0.4 + DF['Quality_Rank'] * 0.4 +

@@ -111,17 +111,24 @@ def Quality(cleaned_data, data_date, today , n = 50, cleaned_price = '',cleaned_
     df = pd.concat([GP.rank(ascending = False) , OP.rank(ascending = False) ,
                     ROE.rank(ascending = False), ROA.rank(ascending = False)],axis = 1)
     df.columns = ['GP','OP','ROE','ROA']
-    number_nan = df.isna().sum(1, skipna = True)
+    number_nan = df.isna().sum(1)
     under_1_nan = number_nan[number_nan<=1].index
     df = df.loc[under_1_nan]
     df['Total_Rank'] = df.mean(axis = 1 , skipna = True)
+    return df.sort_values(by = ['Total_Rank']).iloc[:n]
+
+def ROA_ROE(cleaned_data, data_date, today, n = 50, cleaned_price = '', cleaned_mkt = '') :
+    ROE = cleaned_data['당기순이익'][data_date] / cleaned_data['총자본'][data_date]
+    ROA = cleaned_data['당기순이익'][data_date] / cleaned_data['총자산'][data_date]
+    df = pd.concat([ROE.rank(ascending = False) , ROA.rank(ascending = False)], axis = 1)
+    df['Total_Rank'] = df.mean(axis = 1 , skipna = False)
     return df.sort_values(by = ['Total_Rank']).iloc[:n]
 
 def Value_Quality(cleaned_data, cleaned_mkt, data_date, today, n = 50, cleaned_price = '') :
     V = Value(cleaned_data, cleaned_mkt, data_date, today, n = 5000,cleaned_price = '')
     Q = Quality(cleaned_data, data_date, today , n = 5000, cleaned_price = '',cleaned_mkt='')
     data = pd.concat([V[V.columns[:-1]],Q[Q.columns[:-1]]],axis = 1)
-    number_nan = data.isna().sum(1, skipna = True)
+    number_nan = data.isna().sum(1)
     under_3_nan = number_nan[number_nan<=3].index
     Data  = data.loc[under_3_nan]
     Data['Total_Rank'] = Data.mean(1, skipna = True).round(2)
@@ -182,6 +189,48 @@ def momentum_screen(cleaned_price, today,cleaned_mkt = '', cleaned_data = '', n 
     index1 = current_price[current_price<before_24].index
     index2 = current_price[current_price>before_6].index
     index3 = current_price[current_price<before_1].index
-    index = index1.intersection(index2).intersection(index3)
+    index = (index1.intersection(index2)).intersection(index3)
     return cleaned_price[index]
+
+def F_score(cleaned_data, data_date, today='', n = 50, cleaned_price = '', cleaned_mkt = '') :
+    Data_Date = pd.to_datetime(data_date)
+    if Data_Date >= pd.to_datetime('2001-12-31') :
+        Data_bDate = pd.to_datetime(str(Data_Date.year -1) +'-'+ str(Data_Date.month)+'-'+str(Data_Date.day))
+    else :
+        if Data_Date.month < 5 :
+            Data_bDate = pd.to_datetime(str(Data_Date.year -2) + '-12-31')
+        else :
+            Data_bDate = pd.to_datetime(str(Data_Date.year -1) +'-12-31')    
+    
+    ROE = cleaned_data['당기순이익'][Data_Date] /cleaned_data['총자본'][Data_Date]
+    EBOA = cleaned_data['영업이익'][Data_Date]/ cleaned_data['총자산'][Data_Date]
+    CFO = cleaned_data['영업활동으로인한현금흐름'][Data_Date]
+    Accrual = CFO - cleaned_data['당기순이익'][Data_Date]
+
+    LEV = cleaned_data['총부채'][Data_Date]/cleaned_data['총자본'][Data_Date]
+    bLEV = cleaned_data['총부채'][Data_bDate]/cleaned_data['총자본'][Data_bDate]
+    dLEV = LEV - bLEV
+
+    EQoffer = cleaned_data['기말발행주식수'][Data_Date] - cleaned_data['기말발행주식수'][Data_bDate]
+    LIQ = cleaned_data['유동자산'][Data_Date]/cleaned_data['총자본'][Data_Date]
+    bLIQ = cleaned_data['유동자산'][Data_bDate]/cleaned_data['총자본'][Data_bDate]
+    dLIQ = LIQ - bLIQ
+
+    Margin = cleaned_data['매출총이익'][Data_Date]/cleaned_data['매출액'][Data_Date]
+    bMargin = cleaned_data['매출총이익'][Data_bDate]/cleaned_data['매출액'][Data_bDate]
+    dMargin = Margin - bMargin
+    Turn = cleaned_data['매출액'][Data_Date]/cleaned_data['총자산'][Data_Date]
+    bTurn = cleaned_data['매출액'][Data_bDate]/cleaned_data['총자산'][Data_bDate]
+    dTurn = Turn - bTurn
+    
+    a,b,c,d = ROE > ROE.mean(),EBOA > EBOA.mean(),CFO>0,Accrual > 0
+    Profitability = pd.concat([a,b,c,d],axis =1)
+    e ,f,g = dLEV< 0  , EQoffer<=0 , dLIQ > 0 
+    Safety = pd.concat([e,f,g],axis =1)
+    h , i = dMargin>0 , dTurn>0
+    Eff = pd.concat([h,i],axis = 1)
+    F = pd.concat([Profitability, Safety, Eff],axis = 1)
+    F.columns = ['ROE','EBOA','CFOA','Acc','dLEV','EQoffer','dLIQ','dMargin','dTurn']
+    F['F_score'] = F.sum(1)
+    return F.sort_values(by = ['F_score'], ascending = False).iloc[:n]
 

@@ -7,6 +7,7 @@ This is a temporary script file.
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from dateutil.relativedelta import relativedelta 
 
 def preprocessing_path(path) :
@@ -244,6 +245,10 @@ def F_score(cleaned_data, data_date, today='', n = 50, cleaned_price = '', clean
     F['F_score'] = F.sum(1)
     return F.sort_values(by = ['F_score'], ascending = False).iloc[:n]
 
+#######################################################
+################## runner4_backtest1 ##################
+#######################################################
+
 def price_after_delist(cleaned_price, delist_data) :
     ##############################################
     # 상장폐지 이후가격을 0으로 만들어주는 함수  #
@@ -409,7 +414,7 @@ def my_port_value(choosed_stock_index,start_day , Before_STOP_VALUE,
     return Total_Value, Before_STOP_VALUE,initial_money , initial_money_except_stop
 
 def backtest(Strategy , start_day, end_day, cleaned_data, cleaned_price, cleaned_mkt, delist_data, stop_data,cleaned_kospiyn,
-             rebalance_freq = 6, number_of_stock = 50, initial_money = 10000) :
+             rebalance_freq = 6, number_of_stock = 50, initial_money = 10000,fee = 0) :
     #############기본 셋팅 #######################
     # 1. 뽑을 종목 숫자                          #
     # 2. 포트폴리오의 총 가치를 표시할 DataFrame #
@@ -449,6 +454,117 @@ def backtest(Strategy , start_day, end_day, cleaned_data, cleaned_price, cleaned
                                                                                            rebalance_freq, PRICE, 
                                                                                            initial_money,
                                                                                            initial_money_except_stop, STOP)
+        stopped_money = initial_money - initial_money_except_stop
+        initial_money_except_stop = initial_money_except_stop * (1-fee)
+        initial_money = initial_money_except_stop + stopped_money
         PF_Value = pd.concat([PF_Value, VALUE.iloc[:-1]],axis = 0)
     PF_Value.columns = ['Port_Value']
     return PF_Value.astype(np.int64)
+
+#######################################################
+################## runner6_backtest3 ##################
+#######################################################
+
+def preprocessing_kospi_and_rf(path_kospi_and_interest) :
+    kospi_and_interest = pd.read_excel('kospi_interest_data.xlsx', index_col = 0)
+    kospi = kospi_and_interest[kospi_and_interest.columns[0]]
+    riskfree = kospi_and_interest[kospi_and_interest.columns[1]].fillna(method = 'bfill')/100
+    cleaned_kospi_riskfree = pd.concat([kospi,riskfree],axis = 1)
+    return cleaned_kospi_riskfree
+
+def port_performance(PF, cleaned_kospi_riskfree) :
+    kospi = cleaned_kospi_riskfree[cleaned_kospi_riskfree.columns[0]]
+    name = str(PF.index[0])[:7] + ' ~ '+str(PF.index[-1])[:7]
+    kospi_return = kospi.pct_change()
+    initial ,final = PF[PF.columns[0]].iloc[0],PF[PF.columns[0]].iloc[-1]
+    T = ((PF.index[-1]-PF.index[0]).days/365)
+    CAGR = (final/initial)**(1/T)-1
+    Stdev = PF[PF.columns[0]].pct_change().iloc[1:].std() * np.sqrt(12)
+    Sharp = CAGR/Stdev
+    Draw_Down = -((PF[PF.columns[0]].rolling(12).max()- PF[PF.columns[0]])/PF[PF.columns[0]].rolling(12).max())
+    MDD = Draw_Down.min()
+    ret_Y = PF[PF.columns[0]].resample('Y').last().pct_change()
+    Best_Y , Worst_Y = ret_Y.max() , ret_Y.min()
+    Mkt_Corr = PF[PF.columns[0]].pct_change().corr(kospi_return)
+    data = pd.DataFrame([initial,final,CAGR,Stdev,MDD,Sharp,
+                         Best_Y,Worst_Y,Mkt_Corr],columns = [name]).T.round(3)
+    data.columns = ['initial','final','CAGR','Stdev','MDD','Sharp','Best_Year','Worst_Year','Market_Corr']
+    return data
+
+def calculate_monthly_beta_alpha(PF_DataFrame, cleaned_kospi_riskfree) :
+    PF, kospi = PF_DataFrame , cleaned_kospi_riskfree[cleaned_kospi_riskfree.columns[0]]
+    riskfree = cleaned_kospi_riskfree[cleaned_kospi_riskfree.columns[1]]
+    PF_ret = PF[PF.columns[0]].pct_change().iloc[1:]
+    kospi_ret = kospi.pct_change().iloc[1:][PF_ret.index[0]:PF_ret.index[-1]]
+    DF = pd.concat([PF_ret,kospi_ret], axis = 1)
+    end_date_ran = pd.date_range(DF.index[0] + pd.DateOffset(months = 12, day = 31) , DF.index[-1], freq = '6M')
+    end_date_ran = end_date_ran.append(pd.Index([DF.index[-1]])).unique()
+    beta_DF = pd.DataFrame([],index = [DF.index[0]], columns = ['beta'])
+    for i in range(len(end_date_ran)) :
+        end = end_date_ran[i]
+        start = end - pd.DateOffset(months = 60, days = 31)
+        y = np.array(DF[start:end][DF.columns[0]]).reshape(-1,1)
+        x = np.array(DF[start:end][DF.columns[1]]).reshape(-1,1)
+        beta = np.linalg.inv(x.T.dot(x)).dot(x.T.dot(y))[0][0]
+        beta_DF = pd.concat([beta_DF,pd.DataFrame([beta],index = [end], columns = ['beta'])],axis = 0)
+    beta_dataframe = beta_DF.resample('M').last().interpolate(method = 'linear').fillna(method = 'bfill')
+    
+    
+    rf = riskfree[PF_ret.index[0]:PF_ret.index[-1]]
+    deltaT = pd.Series(rf.index, index = rf.index).diff().fillna(method = 'bfill').apply(lambda x : x.days)/365
+    monthly_rf = (rf * deltaT).rename('rf')
+    data = pd.concat([PF_ret,monthly_rf,beta_dataframe, kospi_ret],axis = 1)    
+    return data
+
+def calculate_annual_alpha(PF,monthly_data,cleaned_kospi_riskfree) :
+    data = monthly_data
+    beta_Y  = data['beta'].resample('Y').mean()
+    PF_Y = PF[PF.columns[0]].resample('Y').last().pct_change().dropna()
+    kospi_ret_Y = cleaned_kospi_riskfree['kospi'].resample('Y').last().pct_change()[PF_Y.index[0]:PF_Y.index[-1]]
+    rf = cleaned_kospi_riskfree[cleaned_kospi_riskfree.columns[1]].resample('Y').last()
+    data_Y = pd.concat([PF_Y,rf,beta_Y,kospi_ret_Y],axis=1).dropna()
+    data_Y['alpha'] = data_Y[data_Y.columns[0]] - ( data_Y[data_Y.columns[1]] + data_Y[data_Y.columns[2]]*(data_Y[data_Y.columns[3]] -  data_Y[data_Y.columns[1]]) )
+    return data_Y.rename(columns = {data_Y.columns[0]:'Ann_Return'})
+
+def plotting_backtest(PF , cleaned_kospi_riskfree, ma_month = 60 , strategy_name = 'F_score') :
+    monthly_data = calculate_monthly_beta_alpha(PF, cleaned_kospi_riskfree)
+    annual_data = calculate_annual_alpha(PF,monthly_data,cleaned_kospi_riskfree)
+    kospi_ret_Y = annual_data[annual_data.columns[3]]
+    PF_return_Y = annual_data[annual_data.columns[0]]
+    alpha_Y = annual_data[annual_data.columns[4]]
+    ind= np.arange(len(PF_return_Y))
+    real_index = list(pd.Series(PF_return_Y.index).apply(lambda x : x.year))
+    Draw_Down = -((PF[PF.columns[0]].rolling(12).max()- PF[PF.columns[0]])/PF[PF.columns[0]].rolling(12).max())
+    MA_return = monthly_data[monthly_data.columns[0]].rolling(ma_month).mean()
+    MA_return_kospi = monthly_data['kospi'].rolling(ma_month).mean()
+    plt.figure(figsize = (16,16))
+    plt.subplot(4,1,1)
+    plt.ylabel('My Portfolio Value',fontsize=15)        
+    plt.plot(PF[PF.columns[0]], label = 'my_portfolio_value')
+    plt.legend(loc = 'best')
+
+    plt.figure(figsize=(16,16))
+    plt.subplot(4,1,2)
+    plt.ylabel('Draw Down', fontsize =15)
+    plt.plot(Draw_Down, color = 'black')
+
+
+    plt.figure(figsize=(16,16))
+    plt.subplot(4,1,3)
+    plt.ylabel('annual return',fontsize=16)        
+    plt.xticks(ind, real_index, rotation='vertical')
+    plt.bar(ind , PF_return_Y, label = 'Ann_Ret' , width = 0.3 , color = 'b')
+    plt.bar(ind+0.15 , kospi_ret_Y, label = 'KOSPI', width= 0.3, color = 'orange')
+    plt.bar(ind+0.35, alpha_Y, label = 'Alpha', width = 0.3, color = 'red')
+    plt.title(str(strategy_name)+' annual_performance', fontsize = 15 )
+    plt.legend(loc = 'best')
+
+    plt.figure(figsize = (16,16))
+    plt.subplot(4,1,4)
+    plt.title(str(ma_month) + ' Month Moving Average Return',fontsize=15)        
+    plt.plot(MA_return, label = 'portfolio_return')
+    plt.plot(MA_return_kospi, label = 'kospi_return')
+    plt.legend(loc = 'best')
+    plt.ylabel('return', fontsize = 15)
+    plt.show()
+    

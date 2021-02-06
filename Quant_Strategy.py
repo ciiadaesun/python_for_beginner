@@ -245,6 +245,56 @@ def F_score(cleaned_data, data_date, today='', n = 50, cleaned_price = '', clean
     F['F_score'] = F.sum(1)
     return F.sort_values(by = ['F_score'], ascending = False).iloc[:n]
 
+def PGV_Score(cleaned_data, data_date, today, cleaned_mkt,cleaned_price = '',n = 50) :
+    Data_Date = pd.to_datetime(data_date)
+    if Data_Date >= pd.to_datetime('2001-12-31') :
+        Data_bDate = pd.to_datetime(str(Data_Date.year -1) +'-'+ str(Data_Date.month)+'-'+str(Data_Date.day))
+    else :
+        if Data_Date.month < 5 :
+            Data_bDate = pd.to_datetime(str(Data_Date.year -2) + '-12-31')
+        else :
+            Data_bDate = pd.to_datetime(str(Data_Date.year -1) +'-12-31')   
+    a_to_b = lambda a , b, cleaned_data, data_date : cleaned_data[a][data_date]/cleaned_data[b][data_date]
+    GPOA = a_to_b( '매출총이익' ,  '총자산', cleaned_data, Data_Date)
+    ROE = a_to_b( '당기순이익' ,  '총자본', cleaned_data, Data_Date)
+    ROA = a_to_b( '당기순이익' ,  '총자산', cleaned_data, Data_Date)
+    CFOA = a_to_b('영업활동으로인한현금흐름','총자산',cleaned_data,Data_Date)
+    GMAR = a_to_b('매출총이익','매출액',cleaned_data,Data_Date)
+    ACC = CFOA - ROA
+    overperform = lambda x : x > x.mean()
+    Profit = pd.concat([overperform(GPOA),overperform(ROE),overperform(ROA),
+                        overperform(CFOA),overperform(GMAR),overperform(ACC)],axis = 1)
+    bGPOA = a_to_b( '매출총이익' ,  '총자산', cleaned_data, Data_bDate)
+    bROE = a_to_b( '당기순이익' ,  '총자본', cleaned_data, Data_bDate)
+    bROA = a_to_b( '당기순이익' ,  '총자산', cleaned_data, Data_bDate)
+    bCFOA = a_to_b('영업활동으로인한현금흐름','총자산',cleaned_data,Data_bDate)
+    bGMAR = a_to_b('매출총이익','매출액',cleaned_data,Data_bDate)
+    bACC = bCFOA - bROA
+    dGPOA = GPOA - bGPOA
+    dROE = ROE - bROE
+    dROA = ROA - bROA
+    dCFOA = CFOA - bCFOA
+    dGMAR = GMAR - bGMAR
+    dACC = ACC - bACC
+    Growth = pd.concat([overperform(dGPOA),overperform(dROE),overperform(dROA),
+                        overperform(dCFOA),overperform(dGMAR),overperform(dACC)],axis = 1)
+    mkt_value = cleaned_mkt[:pd.to_datetime(today)].iloc[-1]
+    Earning_plus = cleaned_data['당기순이익'][Data_Date][cleaned_data['당기순이익'][Data_Date]>0]
+    Book_plus = cleaned_data['총자본'][Data_Date][cleaned_data['총자본'][Data_Date]>0]
+    Sales_plus = cleaned_data['매출액'][Data_Date][cleaned_data['매출액'][Data_Date]>0]
+    Cashflow_plus = cleaned_data['영업활동으로인한현금흐름'][Data_Date][cleaned_data['영업활동으로인한현금흐름'][Data_Date]>0]
+    PER_now = mkt_value[Earning_plus.index]/Earning_plus
+    PBR_now = mkt_value[Book_plus.index]/Book_plus
+    PSR_now = mkt_value[Sales_plus.index]/Sales_plus
+    PCR_now = mkt_value[Cashflow_plus.index]/Cashflow_plus
+    isvalue = lambda x : x < x.mean()
+    Value = pd.concat([isvalue(PER_now) , isvalue(PBR_now), isvalue(PSR_now) , isvalue(PCR_now)],axis = 1)
+    PGV = pd.concat([Profit.sum(1).rename('Profit') , 
+                     Growth.sum(1).rename('Growth') , 
+                     Value.sum(1).rename('Value')],axis = 1).dropna()
+    PGV['Total_Score' ] = PGV.sum(1)
+    return PGV.sort_values(by = ['Total_Score'],ascending = False).iloc[:n]
+
 #######################################################
 ################## runner4_backtest1 ##################
 #######################################################
@@ -454,6 +504,9 @@ def backtest(Strategy , start_day, end_day, cleaned_data, cleaned_price, cleaned
                                                                                            rebalance_freq, PRICE, 
                                                                                            initial_money,
                                                                                            initial_money_except_stop, STOP)
+        #################################
+        ## 리벨런싱 비용을 반영해준다. ##
+        #################################
         stopped_money = initial_money - initial_money_except_stop
         initial_money_except_stop = initial_money_except_stop * (1-fee)
         initial_money = initial_money_except_stop + stopped_money
@@ -568,3 +621,48 @@ def plotting_backtest(PF , cleaned_kospi_riskfree, ma_month = 60 , strategy_name
     plt.ylabel('return', fontsize = 15)
     plt.show()
     
+#######################################################
+################## runner7 Assets Allocation ##########
+#######################################################
+
+def preprocessing_hedgeasset(path_hedgeasset) :
+    hedge_asset = pd.read_excel(path_hedgeasset,index_col = 0)
+    won_value_mid_treasury = hedge_asset['미국채10년'] * hedge_asset['달러환율']
+    won_value_long_treasury = hedge_asset['미국장기채'] * hedge_asset['달러환율']
+    won_value_gold = hedge_asset['골드'] * hedge_asset['달러환율']
+    hedge_value = pd.concat([won_value_mid_treasury.rename('mid_treasury'),
+                             won_value_long_treasury.rename('long_treasury'),
+                             won_value_gold.rename('gold')], axis = 1)
+    hedge_value = (hedge_value/hedge_value.iloc[0] * 10000).round(2)
+    hedge_value['cash']= 10000
+    return hedge_value
+
+def asset_allocation_backtest(Strategy, start_day, end_day , cleaned_data, cleaned_price,
+                              cleaned_mkt, delist_data, stop_data, cleaned_kospiyn, 
+                              cleaned_hedge_value,w_stock = 0.3, w_cash = 0.1 , 
+                              rebalance_freq = 3, number_of_stock = 50, initial_money = 10000, fee = 0.008) :
+    
+    PF  = backtest(Strategy , start_day, end_day, cleaned_data, cleaned_price,
+                                  cleaned_mkt, delist_data, stop_data,cleaned_kospiyn,
+                                  rebalance_freq = rebalance_freq, number_of_stock = number_of_stock,
+                                  initial_money = initial_money, fee =fee)    
+    
+    w_left = 1-w_stock - w_cash
+    w_each = np.round(w_left/3,4)
+    w = np.array([w_each,w_each,w_each,w_cash,w_stock]).reshape(1,-1)
+    rebalance_day_list = list(pd.date_range(start_day ,end_day, freq = 'M')[::rebalance_freq])
+    Port_DF = pd.DataFrame([])    
+    
+    all_assets = pd.concat([cleaned_hedge_value[PF.index[0]:PF.index[-1]],PF],axis = 1)
+    assets = all_assets/all_assets.iloc[0]    
+    
+    adj_fee = np.array([1-fee, 1-fee, 1-fee, 1, 1])
+    for i in range(len(rebalance_day_list)) : 
+        start = rebalance_day_list[i]
+        end = start + pd.DateOffset(months = rebalance_freq, day = 31) 
+        P = assets[start:end]
+        Port_Value = initial_money * w * P/P.iloc[0]  * adj_fee
+        Port_DF = pd.concat([Port_DF, Port_Value.sum(1)],axis = 0)
+        initial_money = Port_Value.sum(1).iloc[-1] 
+    Port_DF.columns = ['Port_Value']
+    return Port_DF.reset_index().drop_duplicates(['index']).set_index('index')
